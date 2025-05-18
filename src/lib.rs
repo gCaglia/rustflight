@@ -1,24 +1,35 @@
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 
 struct RustFlight {
-    num_calls: Rc<RefCell<u8>>,
+    num_calls: Arc<RwLock<u8>>,
 }
 
 impl RustFlight {
     fn new() -> Self {
         let instance = Self {
-            num_calls: Rc::new(RefCell::new(0)),
+            num_calls: Arc::new(RwLock::new(0)),
         };
         return instance;
     }
 
     fn increment_calls(&self) {
-        let mut counter = self.num_calls.borrow_mut();
-        *counter += 1;
+        if let Ok(mut count) = self.num_calls.write() {
+            *count += 1;
+        } else {
+            eprintln!("Failed to aquire write lock!")
+        }
     }
 
     fn get_calls(&self) -> u8 {
-        *self.num_calls.borrow()
+        let calls: Result<RwLockReadGuard<u8>, PoisonError<_>> = self.num_calls.read();
+
+        match calls {
+            Ok(res) => *res,
+            Err(err) => {
+                eprintln!("Error getting calls: {:?}", err);
+                0
+            }
+        }
     }
 
     fn wrap<F, T>(&self, func: F) -> impl Fn(u8) -> T
@@ -26,11 +37,15 @@ impl RustFlight {
         F: Fn(u8) -> T,
         T: std::fmt::Display,
     {
-        let counter = Rc::clone(&self.num_calls);
+        let counter = Arc::clone(&self.num_calls);
         let closure = move |x| {
             println!("Calling with argument: {}", x);
             let result = func(x);
-            *counter.borrow_mut() += 1;
+            if let Ok(mut count) = counter.write() {
+                *count += 1;
+            } else {
+                eprintln!("Failed to aquire write lock!")
+            }
             println!("Result: {}", result);
             return result;
         };
