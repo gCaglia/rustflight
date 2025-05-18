@@ -31,11 +31,22 @@ impl RustFlight {
             }
         }
     }
+}
 
-    fn wrap<F, T>(&self, func: F) -> impl Fn(u8) -> T
+trait RustMethods {
+    type WrappedFn: Fn(u8) -> u8;
+
+    fn wrap<F>(&self, func: F) -> Self::WrappedFn
     where
-        F: Fn(u8) -> T,
-        T: std::fmt::Display,
+        F: Fn(u8) -> u8 + 'static;
+}
+
+impl RustMethods for RustFlight {
+    type WrappedFn = Box<dyn Fn(u8) -> u8>;
+
+    fn wrap<F>(&self, func: F) -> Self::WrappedFn
+    where
+        F: Fn(u8) -> u8 + 'static,
     {
         let counter = Arc::clone(&self.num_calls);
         let closure = move |x| {
@@ -49,7 +60,7 @@ impl RustFlight {
             println!("Result: {}", result);
             return result;
         };
-        closure
+        Box::new(closure)
     }
 }
 
