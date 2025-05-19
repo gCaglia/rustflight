@@ -1,98 +1,123 @@
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
+use std::any::Any;
+use std::{
+    collections::HashMap,
+    error::Error,
+    sync::{Arc, RwLock},
+};
+
+type Cache = Arc<RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>>;
 
 struct RustFlight {
-    num_calls: Arc<RwLock<u8>>,
+    call_cache: Cache,
 }
 
 impl RustFlight {
-    fn new() -> Self {
-        let instance = Self {
-            num_calls: Arc::new(RwLock::new(0)),
-        };
-        return instance;
-    }
-
-    fn increment_calls(&self) {
-        if let Ok(mut count) = self.num_calls.write() {
-            *count += 1;
-        } else {
-            eprintln!("Failed to aquire write lock!")
-        }
-    }
-
-    fn get_calls(&self) -> u8 {
-        let calls: Result<RwLockReadGuard<u8>, PoisonError<_>> = self.num_calls.read();
-
-        match calls {
-            Ok(res) => *res,
-            Err(err) => {
-                eprintln!("Error getting calls: {:?}", err);
-                0
-            }
-        }
+    fn new(timeout: u64, panic_on_timeout: bool) -> Self {
+        let call_cache: Cache = Arc::new(RwLock::new(HashMap::new()));
+        RustFlight { call_cache }
     }
 }
 
 trait RustMethods {
-    type WrappedFn: Fn(u8) -> u8;
-
-    fn wrap<F>(&self, func: F) -> Self::WrappedFn
+    fn call<F, Args, T>(&self, func: F, args: Args, key: String) -> Result<T, Box<dyn Error>>
     where
-        F: Fn(u8) -> u8 + 'static;
+        F: FnOnce(Args) -> T,
+        T: Any + Send + Sync + Clone;
 }
 
 impl RustMethods for RustFlight {
-    type WrappedFn = Box<dyn Fn(u8) -> u8>;
-
-    fn wrap<F>(&self, func: F) -> Self::WrappedFn
+    fn call<F, Args, T>(&self, func: F, args: Args, key: String) -> Result<T, Box<dyn Error>>
     where
-        F: Fn(u8) -> u8 + 'static,
+        F: FnOnce(Args) -> T,
+        T: Any + Send + Sync + Clone,
     {
-        let counter = Arc::clone(&self.num_calls);
-        let closure = move |x| {
-            println!("Calling with argument: {}", x);
-            let result = func(x);
-            if let Ok(mut count) = counter.write() {
-                *count += 1;
-            } else {
-                eprintln!("Failed to aquire write lock!")
+        // Check if the key is in args and if yes retunr the assoicated value
+        let call_cache: Cache = Arc::clone(&self.call_cache);
+
+        if let Ok(reader) = call_cache.read() {
+            if let Some(result) = reader.get(&key) {
+                if let Some(out) = result.downcast_ref::<T>() {
+                    return Ok(out.clone());
+                } else {
+                    return Err("Cached value has unexpected type!".into());
+                }
             }
-            println!("Result: {}", result);
-            return result;
-        };
-        Box::new(closure)
+        } else {
+            return Err("Failed to get read lock!".into());
+        }
+
+        // Otherwise, call the function and return the result
+        let result = func(args);
+        let call_cache_writer = call_cache.write();
+        if let Ok(mut writer) = call_cache_writer {
+            writer.insert(key, Box::new(result.clone()));
+        } else {
+            eprintln!("Failed to aquire write lock!")
+        }
+        Ok(result)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use rand::{rng, Rng};
 
     fn test_instance() -> RustFlight {
-        RustFlight::new()
+        RustFlight::new(1000, false)
     }
 
-    #[test]
-    fn test_increment_calls() {
-        let instance = test_instance();
-        instance.increment_calls();
-
-        assert_eq!(instance.get_calls(), 1)
+    struct TestObject {
+        num_calls: usize,
     }
 
-    #[test]
-    fn test_wrapper() {
-        fn double_it(number: u8) -> u8 {
-            number * 2
+    impl TestObject {
+        fn new() -> Self {
+            TestObject { num_calls: 0 }
         }
 
-        let test_instance = test_instance();
-        assert_eq!(test_instance.get_calls(), 0);
-        let wrapped = test_instance.wrap(double_it);
-        let actual = wrapped(5);
-        let actual_count = test_instance.get_calls();
+        fn sum_up(&mut self, a: i8, b: i8) -> i8 {
+            self.num_calls += 1;
+            a + b
+        }
 
-        assert_eq!(actual, 10);
-        assert_eq!(actual_count, 1);
+        fn get_random_value(&self) -> u8 {
+            return rng().random();
+        }
+    }
+
+    #[test]
+    fn test_call() {
+        let instance = test_instance();
+        let mut test_callable = TestObject::new();
+        let result: i8 = instance
+            .call(
+                |(a, b)| test_callable.sum_up(a, b),
+                (1, 2),
+                "test".to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(result, 3);
+        assert_eq!(test_callable.num_calls, 1);
+    }
+
+    #[test]
+    fn test_call_keys_are_cached() {
+        let instance = test_instance();
+        let test_object = TestObject::new();
+
+        let result1: u8 = instance
+            .call(|()| test_object.get_random_value(), (), "key1".to_string())
+            .unwrap();
+        let result2: u8 = instance
+            .call(|()| test_object.get_random_value(), (), "key1".to_string())
+            .unwrap();
+        let result3: u8 = instance
+            .call(|()| test_object.get_random_value(), (), "key2".to_string())
+            .unwrap();
+
+        assert_eq!(result1, result2);
+        assert_ne!(result2, result3);
     }
 }
