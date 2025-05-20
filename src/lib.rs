@@ -4,17 +4,49 @@ use std::{
     error::Error,
     sync::{Arc, RwLock},
 };
+use pyo3::prelude::*;
+use pyo3::types::PyTuple;
 
 type Cache = Arc<RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>>;
+type PyCache = Arc<RwLock<HashMap<String, Py<PyAny>>>>;
 
+#[pyclass]
 struct RustFlight {
     call_cache: Cache,
 }
 
+#[pymethods]
 impl RustFlight {
-    fn new(timeout: u64, panic_on_timeout: bool) -> Self {
+    #[new]
+    fn new() -> Self {
         let call_cache: Cache = Arc::new(RwLock::new(HashMap::new()));
         RustFlight { call_cache }
+    }
+
+    fn py_call(&self, py: Python<'_>, func: PyObject, args: PyObject, key: String) -> PyResult<PyObject> {
+        let call_cache = Arc::clone(&self.call_cache);
+
+        if let Ok(reader) = call_cache.read() {
+            if let Some(cached) = reader.get(&key) {
+                if let Some(py_obj) = cached.downcast_ref::<Py<PyAny>>() {
+                    return Ok(py_obj.clone_ref(py))
+                } else {
+                    eprintln!("Could not downcast cached result to PyAny!")
+                }
+            }
+        } else {
+            eprintln!("Failed to read cache!")
+        }
+        let result = func.call1(py, args)?;
+        let writer_lock = call_cache.write();
+
+        if let Ok(mut writer) = writer_lock {
+            writer.insert(key, Box::new(result.clone_ref(py)));
+        } else {
+            eprintln!("Failed to acquire write lock!");
+        }
+        
+        return Ok(result);
     }
 }
 
@@ -58,13 +90,14 @@ impl RustMethods for RustFlight {
     }
 }
 
+
 #[cfg(test)]
 mod test {
     use super::*;
     use rand::{rng, Rng};
 
     fn test_instance() -> RustFlight {
-        RustFlight::new(1000, false)
+        RustFlight::new()
     }
 
     struct TestObject {
