@@ -1,14 +1,12 @@
+use pyo3::prelude::*;
 use std::any::Any;
 use std::{
     collections::HashMap,
     error::Error,
     sync::{Arc, RwLock},
 };
-use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 type Cache = Arc<RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>>;
-type PyCache = Arc<RwLock<HashMap<String, Py<PyAny>>>>;
 
 #[pyclass]
 struct RustFlight {
@@ -23,13 +21,19 @@ impl RustFlight {
         RustFlight { call_cache }
     }
 
-    fn py_call(&self, py: Python<'_>, func: PyObject, args: PyObject, key: String) -> PyResult<PyObject> {
+    fn py_call(
+        &self,
+        py: Python<'_>,
+        func: Py<PyAny>,
+        args: Py<PyAny>,
+        key: String,
+    ) -> PyResult<PyObject> {
         let call_cache = Arc::clone(&self.call_cache);
 
         if let Ok(reader) = call_cache.read() {
             if let Some(cached) = reader.get(&key) {
                 if let Some(py_obj) = cached.downcast_ref::<Py<PyAny>>() {
-                    return Ok(py_obj.clone_ref(py))
+                    return Ok(py_obj.clone_ref(py));
                 } else {
                     eprintln!("Could not downcast cached result to PyAny!")
                 }
@@ -37,7 +41,8 @@ impl RustFlight {
         } else {
             eprintln!("Failed to read cache!")
         }
-        let result = func.call1(py, args)?;
+        let args_tuple_result = args.downcast_bound(py)?;
+        let result = func.call1(py, args_tuple_result)?;
         let writer_lock = call_cache.write();
 
         if let Ok(mut writer) = writer_lock {
@@ -45,7 +50,7 @@ impl RustFlight {
         } else {
             eprintln!("Failed to acquire write lock!");
         }
-        
+
         return Ok(result);
     }
 }
@@ -90,10 +95,11 @@ impl RustMethods for RustFlight {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
+    use pyo3::ffi::c_str;
+    use pyo3::types::PyTuple;
     use rand::{rng, Rng};
 
     fn test_instance() -> RustFlight {
@@ -152,5 +158,32 @@ mod test {
 
         assert_eq!(result1, result2);
         assert_ne!(result2, result3);
+    }
+
+    #[test]
+    fn test_py_call() {
+        let instance = test_instance();
+        let args = [1, 2, 3];
+
+        Python::with_gil(|py| {
+            let pyfunc: Py<PyAny> = PyModule::from_code(
+                py,
+                c_str!(
+                    "def f(*args):
+                            return sum(args)"
+                ),
+                c_str!(""),
+                c_str!(""),
+            )
+            .unwrap()
+            .getattr("f")
+            .unwrap()
+            .into();
+            let py_args: Bound<'_, PyTuple> = PyTuple::new(py, &args).unwrap();
+            let actual: PyResult<Py<PyAny>> =
+                instance.py_call(py, pyfunc, py_args.into(), "key".to_string());
+            let rust_actual = actual.unwrap().extract::<i8>(py).unwrap();
+            assert_eq!(rust_actual, 6);
+        });
     }
 }
