@@ -2,13 +2,17 @@
 name = "rustflight"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [lib]
 name = "rustflight"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.25.0", features = ["extension-module"] }
+pyo3 = { version = "0.25.0", features = ["extension-module", "auto-initialize", "generate-import-lib"] }
 
 [dev-dependencies]
 rand = "0.9.1"
+
+[build-dependencies]
+pyo3-build-config = "0.25"
