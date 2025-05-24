@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use std::any::Any;
 use std::{
     collections::HashMap,
@@ -26,6 +27,7 @@ impl RustFlight {
         py: Python<'_>,
         func: Py<PyAny>,
         args: Py<PyAny>,
+        kwargs: Py<PyAny>,
         key: String,
     ) -> PyResult<PyObject> {
         let call_cache = Arc::clone(&self.call_cache);
@@ -42,7 +44,8 @@ impl RustFlight {
             eprintln!("Failed to read cache!")
         }
         let args_tuple_result = args.downcast_bound(py)?;
-        let result = func.call1(py, args_tuple_result)?;
+        let kwargs_pydict: &Bound<'_, PyDict> = kwargs.downcast_bound(py)?;
+        let result = func.call(py, args_tuple_result, Some(kwargs_pydict))?;
         let writer_lock = call_cache.write();
 
         if let Ok(mut writer) = writer_lock {
@@ -98,7 +101,7 @@ impl RustMethods for RustFlight {
 #[cfg(test)]
 mod test {
     use super::*;
-    use pyo3::ffi::c_str;
+    use pyo3::{ffi::c_str, types::IntoPyDict};
     use pyo3::types::PyTuple;
     use rand::{rng, Rng};
 
@@ -169,8 +172,8 @@ mod test {
             let pyfunc: Py<PyAny> = PyModule::from_code(
                 py,
                 c_str!(
-                    "def f(*args):
-                            return sum(args)"
+                    "def f(*args, **kwargs):
+                        return sum(args) / kwargs.get('divide', 1)"
                 ),
                 c_str!(""),
                 c_str!(""),
@@ -180,10 +183,11 @@ mod test {
             .unwrap()
             .into();
             let py_args: Bound<'_, PyTuple> = PyTuple::new(py, &args).unwrap();
+            let py_kwargs: Bound<'_, PyDict> = [("divide", 3)].into_py_dict(py).unwrap();
             let actual: PyResult<Py<PyAny>> =
-                instance.py_call(py, pyfunc, py_args.into(), "key".to_string());
-            let rust_actual = actual.unwrap().extract::<i8>(py).unwrap();
-            assert_eq!(rust_actual, 6);
+                instance.py_call(py, pyfunc, py_args.into(), py_kwargs.into(),  "key".to_string());
+            let rust_actual = actual.unwrap().extract::<f32>(py).unwrap();
+            assert_eq!(rust_actual, 2 as f32);
         });
     }
 }
