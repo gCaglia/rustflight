@@ -1,11 +1,14 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::any::Any;
+use std::hash::Hash;
+use std::sync::Condvar;
 use std::{
     collections::HashMap,
     error::Error,
     sync::{Arc, RwLock},
 };
+use std::sync::Mutex;
 
 type Cache = Arc<RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>>;
 
@@ -97,6 +100,37 @@ impl RustMethods for RustFlight {
         Ok(result)
     }
 }
+
+
+// For Training Purposes 
+struct SimpleCacheEntry<V> {
+    value: Option<V>,
+    notify: Arc<Condvar>
+}
+
+struct SimpleWaiter<K, V> {
+    cache: Arc<Mutex<HashMap<K, SimpleCacheEntry<V>>>>
+}
+
+impl<K, V> SimpleWaiter<K, V> 
+where
+    K: Eq + Hash + Send + 'static,
+    V: Clone + Send + 'static
+    {   
+        fn new() -> Self {
+            return Self { cache: Arc::new(Mutex::new(HashMap::new())) }
+        }
+        fn call_with_cache<F, Args, Out>(&self, f: F, args: Args, key: K) -> Out
+        where F: FnOnce(Args) -> Out {
+            let local_cache = Arc::clone(&self.cache);
+            let mut cache = local_cache.get_mut().unwrap();
+            let result_option = cache.get(&key);
+            if let Some(result) = result_option {
+                
+            }
+
+        }
+    }
 
 #[cfg(test)]
 mod test {
