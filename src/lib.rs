@@ -102,10 +102,21 @@ impl RustMethods for RustFlight {
 }
 
 
-// For Training Purposes 
-struct SimpleCacheEntry<V> {
+// For Training Purposes
+struct CacheEntryState<V> {
     value: Option<V>,
-    notify: Arc<Condvar>
+    ready: bool
+}
+
+impl<V> CacheEntryState<V> {
+    fn pending() -> Self {
+        Self { value: None, ready: false }
+    }
+}
+
+enum SimpleCacheEntry<V> {
+    Ready(V),
+    Pending(Arc<(Mutex<CacheEntryState<V>>, Condvar)>)
 }
 
 struct SimpleWaiter<K, V> {
@@ -114,21 +125,37 @@ struct SimpleWaiter<K, V> {
 
 impl<K, V> SimpleWaiter<K, V> 
 where
-    K: Eq + Hash + Send + 'static,
+    K: Eq + Clone + Hash + Send + 'static,
     V: Clone + Send + 'static
     {   
         fn new() -> Self {
             return Self { cache: Arc::new(Mutex::new(HashMap::new())) }
         }
-        fn call_with_cache<F, Args, Out>(&self, f: F, args: Args, key: K) -> Out
-        where F: FnOnce(Args) -> Out {
-            let local_cache = Arc::clone(&self.cache);
-            let mut cache = local_cache.get_mut().unwrap();
-            let result_option = cache.get(&key);
-            if let Some(result) = result_option {
-                
-            }
+        fn call_with_cache<F, Args>(&self, f: F, args: Args, key: K) -> V
+        where F: FnOnce(Args) -> V {
+            let mut cache = self.cache.lock().unwrap();
 
+            // If entry for key is found, return it
+            match cache.get(&key) {
+                Some(SimpleCacheEntry::Ready(val)) => {
+                    val.clone()
+                }
+                Some(SimpleCacheEntry::Pending(pending)) => {
+                    todo!("Pending")
+                }
+                None => {
+                    let state = Mutex::new(CacheEntryState::<V>::pending());
+                    let notification= Arc::new((state, Condvar::new()));
+                    cache.insert(key.clone(), SimpleCacheEntry::Pending(notification.clone()));
+                    drop(cache);
+                    let result: V = f(args);
+                    let mut cache = self.cache.lock().unwrap();
+                    cache.insert(key, SimpleCacheEntry::Ready(result.clone()));
+                    let (_, cvar) = &*notification;
+                    cvar.notify_all();
+                    result
+                }
+            }
         }
     }
 
