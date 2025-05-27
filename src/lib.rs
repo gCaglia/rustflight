@@ -272,4 +272,16 @@ mod test {
             assert_eq!(rust_actual, 2 as f32);
         });
     }
+
+    #[test]
+    fn test_simple_waiter() {
+        let waiter = SimpleWaiter::<String, u8>::new();
+        let rng = TestObject::new();
+        let test_key = "abc".to_string();
+
+        let expected:u8 = waiter.call_with_cache(|()| rng.get_random_value(), (), test_key.clone());
+        let actual: u8 = waiter.call_with_cache(|()| rng.get_random_value(), (), test_key.clone());
+
+        assert_eq!(actual, expected)
+    }
 }
