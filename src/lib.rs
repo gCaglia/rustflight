@@ -3,12 +3,12 @@ use pyo3::types::PyDict;
 use std::any::Any;
 use std::hash::Hash;
 use std::sync::Condvar;
+use std::sync::Mutex;
 use std::{
     collections::HashMap,
     error::Error,
     sync::{Arc, RwLock},
 };
-use std::sync::Mutex;
 
 type Cache = Arc<RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>>;
 
@@ -101,69 +101,85 @@ impl RustMethods for RustFlight {
     }
 }
 
-
 // For Training Purposes
-struct CacheEntryState<V> {
+struct CacheEntry<V> {
     value: Option<V>,
-    ready: bool
+    ready: bool,
 }
 
-impl<V> CacheEntryState<V> {
+impl<V> CacheEntry<V> {
     fn pending() -> Self {
-        Self { value: None, ready: false }
+        Self {
+            value: None,
+            ready: false,
+        }
     }
 }
 
-enum SimpleCacheEntry<V> {
+enum EntryState<V> {
     Ready(V),
-    Pending(Arc<(Mutex<CacheEntryState<V>>, Condvar)>)
+    Pending(Arc<(Mutex<CacheEntry<V>>, Condvar)>),
 }
 
 struct SimpleWaiter<K, V> {
-    cache: Arc<Mutex<HashMap<K, SimpleCacheEntry<V>>>>
+    cache: Arc<Mutex<HashMap<K, EntryState<V>>>>,
 }
 
-impl<K, V> SimpleWaiter<K, V> 
+impl<K, V> SimpleWaiter<K, V>
 where
     K: Eq + Clone + Hash + Send + 'static,
-    V: Clone + Send + 'static
-    {   
-        fn new() -> Self {
-            return Self { cache: Arc::new(Mutex::new(HashMap::new())) }
-        }
-        fn call_with_cache<F, Args>(&self, f: F, args: Args, key: K) -> V
-        where F: FnOnce(Args) -> V {
-            let mut cache = self.cache.lock().unwrap();
+    V: Clone + Send + 'static,
+{
+    fn new() -> Self {
+        return Self {
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        };
+    }
+    fn call_with_cache<F, Args>(&self, f: F, args: Args, key: K) -> V
+    where
+        F: FnOnce(Args) -> V,
+    {
+        let mut cache = self.cache.lock().unwrap();
 
-            // If entry for key is found, return it
-            match cache.get(&key) {
-                Some(SimpleCacheEntry::Ready(val)) => {
-                    val.clone()
+        // If entry for key is found, return it
+        match cache.get(&key) {
+            Some(EntryState::Ready(val)) => val.clone(),
+            Some(EntryState::Pending(pending)) => {
+                let (lock, cvar) = &**pending;
+                let mut done = lock.lock().unwrap();
+
+                while !done.ready {
+                    done = cvar.wait(done).unwrap();
                 }
-                Some(SimpleCacheEntry::Pending(pending)) => {
-                    todo!("Pending")
+
+                let cache = self.cache.lock().unwrap();
+                if let Some(EntryState::Ready(val)) = cache.get(&key) {
+                    return val.clone();
+                } else {
+                    panic!("Value not found!")
                 }
-                None => {
-                    let state = Mutex::new(CacheEntryState::<V>::pending());
-                    let notification= Arc::new((state, Condvar::new()));
-                    cache.insert(key.clone(), SimpleCacheEntry::Pending(notification.clone()));
-                    drop(cache);
-                    let result: V = f(args);
-                    let mut cache = self.cache.lock().unwrap();
-                    cache.insert(key, SimpleCacheEntry::Ready(result.clone()));
-                    let (_, cvar) = &*notification;
-                    cvar.notify_all();
-                    result
-                }
+            }
+            None => {
+                let state = Mutex::new(CacheEntry::<V>::pending());
+                let notification = Arc::new((state, Condvar::new()));
+                cache.insert(key.clone(), EntryState::Pending(notification.clone()));
+                drop(cache);
+                let result: V = f(args);
+                let mut cache = self.cache.lock().unwrap();
+                cache.insert(key, EntryState::Ready(result.clone()));
+                let (_, cvar) = &*notification;
+                cvar.notify_all();
+                result
             }
         }
     }
+}
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use pyo3::{ffi::c_str, types::IntoPyDict};
     use pyo3::types::PyTuple;
+    use pyo3::{ffi::c_str, types::IntoPyDict};
     use rand::{rng, Rng};
 
     fn test_instance() -> RustFlight {
@@ -245,8 +261,13 @@ mod test {
             .into();
             let py_args: Bound<'_, PyTuple> = PyTuple::new(py, &args).unwrap();
             let py_kwargs: Bound<'_, PyDict> = [("divide", 3)].into_py_dict(py).unwrap();
-            let actual: PyResult<Py<PyAny>> =
-                instance.py_call(py, pyfunc, py_args.into(), py_kwargs.into(),  "key".to_string());
+            let actual: PyResult<Py<PyAny>> = instance.py_call(
+                py,
+                pyfunc,
+                py_args.into(),
+                py_kwargs.into(),
+                "key".to_string(),
+            );
             let rust_actual = actual.unwrap().extract::<f32>(py).unwrap();
             assert_eq!(rust_actual, 2 as f32);
         });
