@@ -131,9 +131,9 @@ where
     V: Clone + Send + 'static,
 {
     fn new() -> Self {
-        return Self {
+        Self {
             cache: Arc::new(Mutex::new(HashMap::new())),
-        };
+        }
     }
     fn call_with_cache<F, Args>(&self, f: F, args: Args, key: K) -> V
     where
@@ -147,12 +147,10 @@ where
             Some(EntryState::Pending(pending)) => {
                 let (lock, cvar) = &**pending;
                 let mut done = lock.lock().unwrap();
-
                 while !done.ready {
                     done = cvar.wait(done).unwrap();
                 }
 
-                let cache = self.cache.lock().unwrap();
                 if let Some(EntryState::Ready(val)) = cache.get(&key) {
                     return val.clone();
                 } else {
@@ -162,13 +160,16 @@ where
             None => {
                 let state = Mutex::new(CacheEntry::<V>::pending());
                 let notification = Arc::new((state, Condvar::new()));
-                cache.insert(key.clone(), EntryState::Pending(notification.clone()));
-                drop(cache);
+                let state = EntryState::Pending(notification.clone());
+                cache.insert(key.clone(), state);
                 let result: V = f(args);
-                let mut cache = self.cache.lock().unwrap();
-                cache.insert(key, EntryState::Ready(result.clone()));
-                let (_, cvar) = &*notification;
+                let (lock, cvar) = &*notification;
+                let mut done = lock.lock().unwrap();
+                done.value = Some(result.clone());
+                done.ready = true;
                 cvar.notify_all();
+                cache.insert(key, EntryState::Ready(result.clone()));
+                drop(cache);
                 result
             }
         }
@@ -279,7 +280,19 @@ mod test {
         let rng = TestObject::new();
         let test_key = "abc".to_string();
 
-        let expected:u8 = waiter.call_with_cache(|()| rng.get_random_value(), (), test_key.clone());
+        let expected: u8 =
+            waiter.call_with_cache(|()| rng.get_random_value(), (), test_key.clone());
+        let state = waiter.cache.lock().unwrap();
+        let result = state.get(&test_key).unwrap();
+        match result {
+            EntryState::Ready(val) => {
+                assert_eq!(val, &expected)
+            }
+            EntryState::Pending(_) => {
+                panic!("Wrong State!");
+            }
+        };
+        drop(state);
         let actual: u8 = waiter.call_with_cache(|()| rng.get_random_value(), (), test_key.clone());
 
         assert_eq!(actual, expected)
