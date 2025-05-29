@@ -1,3 +1,5 @@
+mod py_waiter;
+
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::any::Any;
