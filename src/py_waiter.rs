@@ -48,14 +48,14 @@ impl PyCache {
     fn py_call(
         &self,
         py: Python<'_>,
-        py_func: Py<PyAny>,
-        args: Py<PyAny>,
-        kwargs: Py<PyAny>,
-        key: String,
+        py_func: &Py<PyAny>,
+        args: &Py<PyAny>,
+        kwargs: Option<&Py<PyAny>>,
+        key: &String,
     ) -> Py<PyAny> {
         let mut cache = self.cache.lock().unwrap();
 
-        let cached_value = cache.get(&key);
+        let cached_value = cache.get(key);
 
         if let Some(value_state) = cached_value {
             match value_state {
@@ -73,7 +73,7 @@ impl PyCache {
 
                     while !entry.ready {
                         let (guard, _) = cvar
-                            .wait_timeout(entry, Duration::from_secs(self.timeout))
+                            .wait_timeout(entry, Duration::from_millis(self.timeout))
                             .unwrap();
                         entry = guard;
 
@@ -101,12 +101,16 @@ impl PyCache {
             // Do calculation
             let args_tuple: &Bound<'_, PyTuple> =
                 args.downcast_bound(py).expect("Unable to cast to PyTuple!");
-            let kwargs_dict: &Bound<'_, PyDict> = kwargs
-                .downcast_bound(py)
-                .expect("Unable to cast to PyDict!");
-            let result = py_func
-                .call(py, args_tuple, Some(kwargs_dict))
-                .expect("PyCall failed");
+            let kwargs_dict: &Bound<'_, PyDict>;
+            let result: Py<PyAny>;
+            if let Some(kw) = kwargs {
+                kwargs_dict = kw.downcast_bound(py).expect("Unable to cast to PyDict!");
+                result = py_func
+                    .call(py, args_tuple, Some(kwargs_dict))
+                    .expect("PyCall failed");
+            } else {
+                result = py_func.call(py, args_tuple, None).expect("PyCall failed");
+            }
 
             // Notify waiting values and update state
             let (lock, cvar) = &*pending_entry;
@@ -125,5 +129,72 @@ impl PyCache {
             );
             result
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use pyo3::{
+        ffi::c_str,
+        types::{IntoPyDict, PyTuple},
+    };
+
+    #[test]
+    fn test_pycall() {
+        let pycache = PyCache::new(10000);
+        let args: [i8; 2] = [1, 10];
+        let kwargs: [(&'static str, i16); 1] = [("multiplier", 100)];
+        let test_key: String = "test".to_string();
+
+        Python::with_gil(|py| {
+            let pyfunc: Py<PyAny> = PyModule::from_code(
+                py,
+                c_str!(
+                    "from random import randint
+
+def f(lower, upper, multiplier):
+                        return randint(lower, upper)*multiplier"
+                ),
+                c_str!(""),
+                c_str!(""),
+            )
+            .unwrap()
+            .getattr("f")
+            .unwrap()
+            .into();
+            let py_args: Bound<'_, PyTuple> = PyTuple::new(py, &args).unwrap();
+            let py_kwargs: Bound<'_, PyDict> = kwargs.into_py_dict(py).unwrap();
+
+            let _ = pycache.py_call(
+                py,
+                &pyfunc,
+                &py_args.clone().into(),
+                Some(&py_kwargs.into()),
+                &test_key,
+            );
+
+            // Assert state of cache
+            let cache = pycache.cache.lock().unwrap();
+            let cached_entry = cache.get(&test_key).unwrap();
+            let expected: i32;
+            match cached_entry {
+                PyEntryState::Ready(val) => {
+                    assert_eq!(val.ready, true);
+                    expected = val.value.as_ref().unwrap().extract::<i32>(py).unwrap();
+                    assert!(expected > 10);
+                }
+                PyEntryState::Pending(_) => {
+                    panic!("State was Pending after execution!")
+                }
+            }
+            drop(cache);
+            let actual = pycache
+                .py_call(py, &pyfunc, &py_args.clone().into(), None, &test_key)
+                .extract::<i32>(py)
+                .unwrap();
+
+            assert_eq!(actual, expected);
+        })
     }
 }
