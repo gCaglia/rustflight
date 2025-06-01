@@ -130,6 +130,11 @@ impl PyCache {
             result
         }
     }
+
+    fn drop(&self, key: String) {
+        let mut cache = self.cache.lock().expect("Unable to lock cache!");
+        cache.remove(&key);
+    }
 }
 
 #[cfg(test)]
