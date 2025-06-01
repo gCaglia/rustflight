@@ -32,12 +32,15 @@ enum PyEntryState {
     Pending(Arc<(Mutex<PyCacheEntry>, Condvar)>),
 }
 
-struct PyCache {
+#[pyclass]
+pub struct PyCache {
     cache: Arc<Mutex<HashMap<String, PyEntryState>>>,
     timeout: u64,
 }
 
+#[pymethods]
 impl PyCache {
+    #[new]
     fn new(timeout: u64) -> Self {
         Self {
             cache: Arc::new(Mutex::new(HashMap::new())),

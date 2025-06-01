@@ -9,7 +9,7 @@ name = "rustflight"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.25.0", features = ["extension-module", "auto-initialize", "generate-import-lib"] }
+pyo3 = { version = "0.25.0", features = ["extension-module", "auto-initialize"] }
 
 [dev-dependencies]
 rand = "0.9.1"
