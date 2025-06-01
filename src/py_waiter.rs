@@ -48,14 +48,14 @@ impl PyCache {
     fn py_call(
         &self,
         py: Python<'_>,
-        py_func: &Py<PyAny>,
-        args: &Py<PyAny>,
-        kwargs: Option<&Py<PyAny>>,
-        key: &String,
+        py_func: Py<PyAny>,
+        args: Py<PyAny>,
+        kwargs: Py<PyAny>,
+        key: String,
     ) -> Py<PyAny> {
         let mut cache = self.cache.lock().unwrap();
 
-        let cached_value = cache.get(key);
+        let cached_value = cache.get(&key);
 
         if let Some(value_state) = cached_value {
             match value_state {
@@ -102,15 +102,12 @@ impl PyCache {
             let args_tuple: &Bound<'_, PyTuple> =
                 args.downcast_bound(py).expect("Unable to cast to PyTuple!");
             let kwargs_dict: &Bound<'_, PyDict>;
-            let result: Py<PyAny>;
-            if let Some(kw) = kwargs {
-                kwargs_dict = kw.downcast_bound(py).expect("Unable to cast to PyDict!");
-                result = py_func
-                    .call(py, args_tuple, Some(kwargs_dict))
-                    .expect("PyCall failed");
-            } else {
-                result = py_func.call(py, args_tuple, None).expect("PyCall failed");
-            }
+            kwargs_dict = kwargs
+                .downcast_bound(py)
+                .expect("Unable to cast to PyDict!");
+            let result = py_func
+                .call(py, args_tuple, Some(kwargs_dict))
+                .expect("PyCall failed");
 
             // Notify waiting values and update state
             let (lock, cvar) = &*pending_entry;
@@ -168,10 +165,10 @@ def f(lower, upper, multiplier):
 
             let _ = pycache.py_call(
                 py,
-                &pyfunc,
-                &py_args.clone().into(),
-                Some(&py_kwargs.into()),
-                &test_key,
+                pyfunc.clone_ref(py),
+                py_args.clone().into(),
+                py_kwargs.into(),
+                test_key.clone(),
             );
 
             // Assert state of cache
@@ -190,7 +187,13 @@ def f(lower, upper, multiplier):
             }
             drop(cache);
             let actual = pycache
-                .py_call(py, &pyfunc, &py_args.clone().into(), None, &test_key)
+                .py_call(
+                    py,
+                    pyfunc.clone_ref(py),
+                    py_args.clone().into(),
+                    PyDict::new(py).into(),
+                    test_key,
+                )
                 .extract::<i32>(py)
                 .unwrap();
 
