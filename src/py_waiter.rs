@@ -72,63 +72,70 @@ impl PyCache {
                 }
                 PyEntryState::Pending(lock_var) => {
                     let (lock, cvar) = &**lock_var;
-                    let mut entry = lock.lock().unwrap();
 
-                    while !entry.ready {
+                    loop {
+                        let entry = lock.lock().unwrap();
+
+                        if entry.ready {
+                            let return_value = entry
+                                .value
+                                .as_ref()
+                                .expect("None after ready!")
+                                .clone_ref(py);
+                            return return_value;
+                        }
+
                         let (guard, _) = cvar
                             .wait_timeout(entry, Duration::from_millis(self.timeout))
                             .unwrap();
-                        entry = guard;
 
-                        if !entry.ready {
-                            panic!("Timeout while waiting for result")
+                        if guard.ready {
+                            let return_value = guard
+                                .value
+                                .as_ref()
+                                .expect("Guard is none after ready!")
+                                .clone_ref(py);
+                            return return_value;
                         }
+                        break;
                     }
-
-                    let return_value = entry
-                        .value
-                        .as_ref()
-                        .expect("Ready value was None after Pending state.")
-                        .clone_ref(py);
-                    return return_value;
                 }
             }
-        } else {
-            // Insert waiting state and drop call
-            let placeholder = PyCacheEntry::pending();
-            let notification = Condvar::new();
-            let pending_entry = Arc::new((Mutex::new(placeholder), notification));
-            cache.insert(key.clone(), PyEntryState::Pending(pending_entry.clone()));
-            drop(cache);
-
-            // Do calculation
-            let args_tuple: &Bound<'_, PyTuple> =
-                args.downcast_bound(py).expect("Unable to cast to PyTuple!");
-            let kwargs_dict: &Bound<'_, PyDict>;
-            kwargs_dict = kwargs
-                .downcast_bound(py)
-                .expect("Unable to cast to PyDict!");
-            let result = py_func
-                .call(py, args_tuple, Some(kwargs_dict))
-                .expect("PyCall failed");
-
-            // Notify waiting values and update state
-            let (lock, cvar) = &*pending_entry;
-            let mut entry = lock.lock().expect("Unable to get cache entry for update");
-            entry.ready(result.clone_ref(py));
-            cvar.notify_all();
-
-            //Return
-            cache = self
-                .cache
-                .lock()
-                .expect("Unable to get lock for final update");
-            cache.insert(
-                key.clone(),
-                PyEntryState::Ready(PyCacheEntry::new(Some(result.clone_ref(py)), true)),
-            );
-            result
         }
+        // Insert waiting state and drop call
+        let placeholder = PyCacheEntry::pending();
+        let notification = Condvar::new();
+        let pending_entry = Arc::new((Mutex::new(placeholder), notification));
+        cache.insert(key.clone(), PyEntryState::Pending(pending_entry.clone()));
+        drop(cache);
+
+        // Do calculation
+        let args_tuple: &Bound<'_, PyTuple> =
+            args.downcast_bound(py).expect("Unable to cast to PyTuple!");
+        let kwargs_dict: &Bound<'_, PyDict>;
+        kwargs_dict = kwargs
+            .downcast_bound(py)
+            .expect("Unable to cast to PyDict!");
+        let result = py_func
+            .call(py, args_tuple, Some(kwargs_dict))
+            .expect("PyCall failed");
+
+        // Notify waiting values and update state
+        let (lock, cvar) = &*pending_entry;
+        let mut entry = lock.lock().expect("Unable to get cache entry for update");
+        entry.ready(result.clone_ref(py));
+        cvar.notify_all();
+
+        //Return
+        cache = self
+            .cache
+            .lock()
+            .expect("Unable to get lock for final update");
+        cache.insert(
+            key.clone(),
+            PyEntryState::Ready(PyCacheEntry::new(Some(result.clone_ref(py)), true)),
+        );
+        result
     }
 
     fn drop(&self, key: String) {
