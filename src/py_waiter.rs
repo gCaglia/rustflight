@@ -10,10 +10,6 @@ struct PyCacheEntry {
 }
 
 impl PyCacheEntry {
-    fn new(value: Option<Py<PyAny>>, ready: bool) -> Self {
-        Self { value, ready }
-    }
-
     fn pending() -> Self {
         Self {
             value: None,
@@ -28,7 +24,6 @@ impl PyCacheEntry {
 }
 
 enum PyEntryState {
-    Ready(PyCacheEntry),
     Pending(Arc<(Mutex<PyCacheEntry>, Condvar)>),
 }
 
@@ -62,42 +57,32 @@ impl PyCache {
 
         if let Some(value_state) = cached_value {
             match value_state {
-                PyEntryState::Ready(entry) => {
-                    let return_value = entry
-                        .value
-                        .as_ref()
-                        .expect("Ready value was None.")
-                        .clone_ref(py);
-                    return return_value;
-                }
                 PyEntryState::Pending(lock_var) => {
                     let (lock, cvar) = &**lock_var;
+                    let entry = lock.lock().unwrap();
+                    if entry.ready {
+                        return entry
+                            .value
+                            .as_ref()
+                            .expect("None after read!")
+                            .clone_ref(py);
+                    }
+                    drop(entry);
 
-                    loop {
-                        let entry = lock.lock().unwrap();
-
-                        if entry.ready {
-                            let return_value = entry
-                                .value
-                                .as_ref()
-                                .expect("None after ready!")
-                                .clone_ref(py);
-                            return return_value;
-                        }
-
-                        let (guard, _) = cvar
-                            .wait_timeout(entry, Duration::from_millis(self.timeout))
+                    let _ = py.allow_threads(move || {
+                        let wait_guard = lock.lock().unwrap();
+                        let _ = cvar
+                            .wait_timeout(wait_guard, Duration::from_millis(self.timeout))
                             .unwrap();
+                    });
 
-                        if guard.ready {
-                            let return_value = guard
-                                .value
-                                .as_ref()
-                                .expect("Guard is none after ready!")
-                                .clone_ref(py);
-                            return return_value;
-                        }
-                        break;
+                    let entry = lock.lock().unwrap();
+                    if entry.ready {
+                        return entry
+                            .value
+                            .as_ref()
+                            .expect("None after read!")
+                            .clone_ref(py);
                     }
                 }
             }
@@ -125,16 +110,6 @@ impl PyCache {
         let mut entry = lock.lock().expect("Unable to get cache entry for update");
         entry.ready(result.clone_ref(py));
         cvar.notify_all();
-
-        //Return
-        cache = self
-            .cache
-            .lock()
-            .expect("Unable to get lock for final update");
-        cache.insert(
-            key.clone(),
-            PyEntryState::Ready(PyCacheEntry::new(Some(result.clone_ref(py)), true)),
-        );
         result
     }
 
@@ -191,13 +166,11 @@ def f(lower, upper, multiplier):
             let cached_entry = cache.get(&test_key).unwrap();
             let expected: i32;
             match cached_entry {
-                PyEntryState::Ready(val) => {
-                    assert_eq!(val.ready, true);
-                    expected = val.value.as_ref().unwrap().extract::<i32>(py).unwrap();
-                    assert!(expected > 10);
-                }
-                PyEntryState::Pending(_) => {
-                    panic!("State was Pending after execution!")
+                PyEntryState::Pending(val) => {
+                    let (lock, _) = &**val;
+                    let entry = lock.lock().unwrap();
+                    assert_eq!(entry.ready, true);
+                    expected = entry.value.as_ref().unwrap().extract::<i32>(py).unwrap();
                 }
             }
             drop(cache);
