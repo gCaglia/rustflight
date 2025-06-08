@@ -1,14 +1,10 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod py_waiter;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use py_waiter::PyCache;
+use pyo3::prelude::*;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[pymodule]
+fn rustflight(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyCache>()?;
+    Ok(())
 }
