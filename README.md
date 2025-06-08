@@ -1,6 +1,6 @@
 # rustflight
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![PyPI](https://img.shields.io/pypi/v/mypackage)
+![PyPI](https://img.shields.io/pypi/v/rustflight)
 
 *A fast, Rust-powered Python package for inflight deduplication of multithreaded requests.*
 
