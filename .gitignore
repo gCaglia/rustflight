@@ -22,3 +22,6 @@ target/
 
 # IDE
 .vscode
+
+# Env file
+.env
